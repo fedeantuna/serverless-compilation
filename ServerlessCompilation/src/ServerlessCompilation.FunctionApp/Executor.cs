@@ -12,6 +12,7 @@ using System.Reflection;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using System.Runtime.Loader;
+using ServerlessCompilation.FunctionApp.Models;
 
 namespace ServerlessCompilation.FunctionApp
 {
@@ -40,12 +41,13 @@ namespace ServerlessCompilation.FunctionApp
         {
             log.LogInformation("Request received.");
 
-            var defNamespace = (String)req.Query["namespace"] ?? DefaultNamespace;
-            var defClass = (String)req.Query["class"] ?? DefaultClass;
-            var defMethod = (String)req.Query["method"] ?? DefaultMethod;
             var requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-            dynamic data = JsonConvert.DeserializeObject(requestBody);
-            var code = (String)data?.csharpcode ?? DefaultCode;
+            var codeDefinition = JsonConvert.DeserializeObject<CodeDefinition>(requestBody);
+            var defNamespace = codeDefinition?.Namespace ?? DefaultNamespace;
+            var defClass = codeDefinition?.Class ?? DefaultClass;
+            var defMethod = codeDefinition?.Method ?? DefaultMethod;
+            var defParameters = codeDefinition?.Parameters;
+            var code = codeDefinition?.CSharpCode ?? DefaultCode;
 
             var syntaxTree = CSharpSyntaxTree.ParseText(code);
 
@@ -62,30 +64,28 @@ namespace ServerlessCompilation.FunctionApp
                 references: references,
                 options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
-            using (var memoryStream = new MemoryStream())
+            using var memoryStream = new MemoryStream();
+            var compilationResult = compilation.Emit(memoryStream);
+
+            if (compilationResult.Success)
             {
-                var compilationResult = compilation.Emit(memoryStream);
+                memoryStream.Seek(0, SeekOrigin.Begin);
 
-                if (compilationResult.Success)
-                {
-                    memoryStream.Seek(0, SeekOrigin.Begin);
+                var assembly = AssemblyLoadContext.Default.LoadFromStream(memoryStream);
 
-                    var assembly = AssemblyLoadContext.Default.LoadFromStream(memoryStream);
+                var assemblyType = assembly.GetType($"{defNamespace}.{defClass}");
+                var instance = assembly.CreateInstance($"{defNamespace}.{defClass}");
+                var method = assemblyType.GetMember(defMethod).Single() as MethodInfo;
 
-                    var assemblyType = assembly.GetType($"{defNamespace}.{defClass}");
-                    var instance = assembly.CreateInstance($"{defNamespace}.{defClass}");
-                    var method = assemblyType.GetMember(defMethod).Single() as MethodInfo;
+                var result = method.Invoke(instance, defParameters);
 
-                    var result = method.Invoke(instance, null);
+                return new OkObjectResult(JsonConvert.SerializeObject(result));
+            }
+            else
+            {
+                var failures = compilationResult.Diagnostics.Where(d => d.IsWarningAsError || d.Severity == DiagnosticSeverity.Error);
 
-                    return new OkObjectResult(JsonConvert.SerializeObject(result));
-                }
-                else
-                {
-                    var failures = compilationResult.Diagnostics.Where(d => d.IsWarningAsError || d.Severity == DiagnosticSeverity.Error);
-
-                    return new OkObjectResult(JsonConvert.SerializeObject(failures));
-                }
+                return new OkObjectResult(JsonConvert.SerializeObject(failures));
             }
         }
     }

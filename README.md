@@ -8,7 +8,7 @@ A small proof of concept just to demonstrate how to do a simple compilation from
 ## Example to call the function using POST
 
 ### URL
-http://localhost:7071/api/Execute?namespace=Something&class=SomethingElse&method=SomethingDifferent
+http://localhost:7071/api/Execute
 
 ### Body examples
 ```
